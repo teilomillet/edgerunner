@@ -70,8 +70,7 @@ fn app() -> Html {
             if d <= 1.0 {
                 (0.0, 0.0, 0.0, 0.0, f64::NAN, f64::NAN, f64::NAN)
             } else {
-                // Interpret your input as the probability of the SELECTED side.
-                // This avoids confusion when betting the opposite side (e.g., "70% not happen").
+                // Interpret your input as the probability of the SELECTED side (Yes/No).
                 let p = *your_prob as f64 / 100.0;
                 let b = d - 1.0; // net profit per 1 staked
                 let q = 1.0 - p;
@@ -86,6 +85,21 @@ fn app() -> Html {
         } else {
             (0.0, 0.0, 0.0, 0.0, f64::NAN, f64::NAN, f64::NAN)
         };
+
+    // Per-$1 and fair odds metrics for the selected side
+    let p_selected = *your_prob as f64 / 100.0;
+    let d_selected = decimal_odds.unwrap_or(f64::NAN);
+    let b_selected = if d_selected > 1.0 { d_selected - 1.0 } else { f64::NAN };
+    let win_per_1 = b_selected; // profit if win per $1 staked
+    let loss_per_1 = if d_selected.is_nan() { f64::NAN } else { 1.0 };
+    let fair_decimal = if p_selected > 0.0 { 1.0 / p_selected } else { f64::INFINITY };
+    let fair_dec_str = if fair_decimal.is_finite() { format_decimal(fair_decimal) } else { "—".into() };
+    let fair_am_str = if fair_decimal.is_finite() { format_american(fair_decimal) } else { "—".into() };
+    let fair_fr_str = if fair_decimal.is_finite() { format_fractional(fair_decimal) } else { "—".into() };
+    let g_full = if kelly_f > 0.0 && b_selected.is_finite() {
+        let p = p_selected; let f = kelly_f; let b = b_selected;
+        p * (1.0 + f*b).ln() + (1.0 - p) * (1.0 - f).ln()
+    } else { 0.0 };
 
     // Handlers
     let on_market_prob_input = {
@@ -221,8 +235,8 @@ fn app() -> Html {
     let edge_status = if edge_prob.is_nan() { "muted" } else if edge_prob <= 0.0 { "danger" } else { "success" };
 
     // Side labels and complementary odds for clarity in UI
-    let selected_side_label = match *bet_side { BetSide::OnEvent => "Event Happens", BetSide::OnOpposite => "Event Doesn't Happen" };
-    let other_side_label = match *bet_side { BetSide::OnEvent => "Event Doesn't Happen", BetSide::OnOpposite => "Event Happens" };
+    let selected_side_label = match *bet_side { BetSide::OnEvent => "Yes", BetSide::OnOpposite => "No" };
+    let other_side_label = match *bet_side { BetSide::OnEvent => "No", BetSide::OnOpposite => "Yes" };
     let comp_dec_odds = decimal_odds.map(|d| complement_decimal(d));
 
     html! {
@@ -318,8 +332,8 @@ fn app() -> Html {
                                 {"Bet Side"}
                             </label>
                             <select onchange={on_bet_side_change} aria-label="Bet side selection">
-                                <option selected={matches!(*bet_side, BetSide::OnEvent)}>{"Event Happens"}</option>
-                                <option selected={matches!(*bet_side, BetSide::OnOpposite)}>{"Event Doesn't Happen"}</option>
+                                <option selected={matches!(*bet_side, BetSide::OnEvent)}>{"Yes"}</option>
+                                <option selected={matches!(*bet_side, BetSide::OnOpposite)}>{"No"}</option>
                             </select>
                         </div>
                     </div>
@@ -430,6 +444,14 @@ fn app() -> Html {
                             <div class="metric-label">{"EV per $1"}</div>
                         </div>
                         <div class="metric-item">
+                            <div class="metric-value">{ if win_per_1.is_nan() { "—".into() } else { format!("{:.3}", win_per_1) } }</div>
+                            <div class="metric-label">{"Win Profit per $1"}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-value">{ if loss_per_1.is_nan() { "—".into() } else { format!("{:.0}", loss_per_1) } }</div>
+                            <div class="metric-label">{"Loss per $1"}</div>
+                        </div>
+                        <div class="metric-item">
                             <div class="metric-value">
                                 { if implied_prob.is_nan() { "—".into() } else { format!("{:.1}%", 100.0*implied_prob) }}
                             </div>
@@ -446,6 +468,14 @@ fn app() -> Html {
                                 {format!("{:.1}%", *your_prob)}
                             </div>
                             <div class="metric-label">{format!("Your Prob — {}", selected_side_label)}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-value">{format!("{} | {} | {}", fair_dec_str, fair_am_str, fair_fr_str)}</div>
+                            <div class="metric-label">{format!("Your Fair Odds — {}", selected_side_label)}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-value">{format!("{:+.3} bp", g_full * 10_000.0)}</div>
+                            <div class="metric-label">{"Log Growth @ Full Kelly"}</div>
                         </div>
                     </div>
                 </div>
