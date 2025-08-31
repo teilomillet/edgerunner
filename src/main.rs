@@ -1,6 +1,7 @@
 use yew::prelude::*;
 use yew::TargetCast;
 use web_sys::{HtmlInputElement, HtmlSelectElement};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq)]
 enum OddsFormat {
@@ -25,6 +26,12 @@ enum BetSide { OnEvent, OnOpposite }
 #[derive(Clone, PartialEq)]
 struct OutcomeRow { name: String, mkt: f64, yours: f64 }
 
+#[derive(Clone, PartialEq)]
+struct CompareRow { name: String, group: String, odds: String, your: f64 }
+
+#[derive(Clone, PartialEq)]
+struct ThreeRow { name: String, mkt: f64, yours: f64 }
+
 #[function_component(App)]
 fn app() -> Html {
     // Single bet state
@@ -40,6 +47,18 @@ fn app() -> Html {
     let outcomes = use_state(|| vec![
         OutcomeRow { name: "A".into(), mkt: 50.0, yours: 60.0 },
         OutcomeRow { name: "B".into(), mkt: 50.0, yours: 40.0 },
+    ]);
+
+    // Compare bets state (live comparisons across different selections/markets)
+    let compares = use_state(|| vec![
+        CompareRow { name: "Selection 1".into(), group: "Market 1".into(), odds: "".into(), your: 55.0 },
+    ]);
+
+    // Three-way market (exact Kelly for a single event with 3 outcomes)
+    let three = use_state(|| vec![
+        ThreeRow { name: "Home".into(), mkt: 40.0, yours: 45.0 },
+        ThreeRow { name: "Draw".into(), mkt: 30.0, yours: 25.0 },
+        ThreeRow { name: "Away".into(), mkt: 30.0, yours: 30.0 },
     ]);
 
     // Helpers
@@ -225,6 +244,16 @@ fn app() -> Html {
         })
     };
 
+    // Add-compare handler
+    let on_add_compare = {
+        let compares = compares.clone();
+        Callback::from(move |_| {
+            let mut v = (*compares).clone();
+            v.push(CompareRow{ name: format!("Selection {}", v.len()+1), group: "Market".into(), odds: "".into(), your: 50.0 });
+            compares.set(v);
+        })
+    };
+
     // Validation helpers
     let bankroll_valid = bankroll_val() > 0.0;
     let odds_valid = decimal_odds.is_some();
@@ -238,6 +267,43 @@ fn app() -> Html {
     let selected_side_label = match *bet_side { BetSide::OnEvent => "Yes", BetSide::OnOpposite => "No" };
     let other_side_label = match *bet_side { BetSide::OnEvent => "No", BetSide::OnOpposite => "Yes" };
     let comp_dec_odds = decimal_odds.map(|d| complement_decimal(d));
+
+    // Compare panel computations: build grouped view data outside html!
+    let cmp_rows = (*compares).clone();
+    let mut cmp_by_group: HashMap<String, Vec<(usize, f64, f64, f64, f64)>> = HashMap::new();
+    for (idx, r) in cmp_rows.iter().enumerate() {
+        if let Some(d) = parse_any(&r.odds) {
+            if d > 1.0 {
+                let p = (r.your/100.0).clamp(0.0, 1.0);
+                let imp = 1.0/d;
+                let b = d - 1.0; let q = 1.0 - p;
+                let f = (((b*p) - q) / b).clamp(0.0, 1.0);
+                let ev = (p*b) - q;
+                cmp_by_group.entry(r.group.clone()).or_default().push((idx, d, f, imp, ev));
+            }
+        }
+    }
+    let mut compare_view: Vec<(String, f64, f64, Vec<(usize, f64, f64, f64, f64)>)> = Vec::new();
+    for (g, items) in cmp_by_group.into_iter() {
+        let sum_f: f64 = items.iter().map(|(_,_,f,_,_)| *f).sum();
+        let scale = if sum_f > 1.0 { 1.0/sum_f } else { 1.0 };
+        compare_view.push((g, sum_f, scale, items));
+    }
+    let bank_for_cmp = bankroll_val();
+
+    // Three-way exact Kelly compute
+    let three_rows = (*three).clone();
+    let mut p_vec: Vec<f64> = Vec::new();
+    let mut d_vec: Vec<f64> = Vec::new();
+    for r in three_rows.iter() {
+        let pm = (r.mkt/100.0).clamp(1e-9, 1.0 - 1e-9);
+        let d = 1.0/pm; // use market-implied odds for each outcome
+        let p = (r.yours/100.0).clamp(1e-9, 1.0);
+        p_vec.push(p);
+        d_vec.push(d);
+    }
+    let three_alloc = kelly_multi_exact(&p_vec, &d_vec, 1.0);
+    let three_sum: f64 = three_alloc.iter().sum();
 
     html! {
         <div class="container">
@@ -584,6 +650,161 @@ fn app() -> Html {
                 </div>
             </div>
 
+            <div class="card">
+                <h2>
+                    <span>{"Compare Bets (Live)"}</span>
+                </h2>
+                <div class="hint" style="margin-bottom:12px;">{"Add selections across one or more markets (groups). Odds can be decimal, American, or fractional."}</div>
+
+                <div>
+                    { for (*compares).iter().enumerate().map(|(i, r)| {
+                        let compares_set = compares.clone();
+                        let on_name = Callback::from(move |e: InputEvent| {
+                            let mut v = (*compares_set).clone();
+                            let t: HtmlInputElement = e.target_unchecked_into();
+                            v[i].name = t.value();
+                            compares_set.set(v);
+                        });
+                        let compares_set2 = compares.clone();
+                        let on_group = Callback::from(move |e: InputEvent| {
+                            let mut v = (*compares_set2).clone();
+                            let t: HtmlInputElement = e.target_unchecked_into();
+                            v[i].group = t.value();
+                            compares_set2.set(v);
+                        });
+                        let compares_set3 = compares.clone();
+                        let on_odds = Callback::from(move |e: InputEvent| {
+                            let mut v = (*compares_set3).clone();
+                            let t: HtmlInputElement = e.target_unchecked_into();
+                            v[i].odds = t.value();
+                            compares_set3.set(v);
+                        });
+                        let compares_set4 = compares.clone();
+                        let on_your = Callback::from(move |e: InputEvent| {
+                            let mut v = (*compares_set4).clone();
+                            let t: HtmlInputElement = e.target_unchecked_into();
+                            v[i].your = t.value().parse::<f64>().unwrap_or(0.0).clamp(0.0, 100.0);
+                            compares_set4.set(v);
+                        });
+                        let compares_set5 = compares.clone();
+                        let on_remove = Callback::from(move |_| {
+                            let mut v = (*compares_set5).clone();
+                            if i < v.len() { v.remove(i); }
+                            compares_set5.set(v);
+                        });
+                        html!{
+                            <div class="row three" style="gap:8px; margin-bottom:12px; align-items: end;">
+                                <div>
+                                    <label>{"Name"}</label>
+                                    <input value={r.name.clone()} oninput={on_name} aria-label="Compare name" />
+                                </div>
+                                <div>
+                                    <label>{"Group (market)"}</label>
+                                    <input value={r.group.clone()} oninput={on_group} aria-label="Compare group" />
+                                </div>
+                                <div>
+                                    <label>{"Odds"}</label>
+                                    <input placeholder={"e.g. 2.10, +110, 11/10"} value={r.odds.clone()} oninput={on_odds} aria-label="Compare odds" />
+                                </div>
+                                <div>
+                                    <label>{"Your %"}</label>
+                                    <input type="number" min="0" max="100" step="0.1" value={format!("{:.1}", r.your)} oninput={on_your} aria-label="Your probability" />
+                                </div>
+                                <button onclick={on_remove} class="danger" style="height:40px;">{"Remove"}</button>
+                            </div>
+                        }
+                    }) }
+                    <button onclick={on_add_compare.clone()} style="margin-top:8px; width:100%;">{"Add Selection"}</button>
+                </div>
+
+                <div style="margin-top:12px;">
+                    { for compare_view.iter().map(|(g, sum_f, scale, items)| {
+                        html!{
+                            <div style="margin-bottom:12px;">
+                                <div class="muted">{format!("Group: {} — total Kelly {:.1}% (scaled: {}x)", g, 100.0*sum_f, format!("{:.2}", scale))}</div>
+                                { for items.iter().map(|(idx, d, f, _imp, ev)| {
+                                    let r = &cmp_rows[*idx];
+                                    let rec = f * *scale;
+                                    html!{
+                                        <div style="padding:8px; background:rgba(255,255,255,0.02); border-radius:6px; margin-top:6px;">
+                                            <strong>{&r.name}</strong>{" — "}{format!("{}", &r.group)}
+                                            <div style="font-size:12px; color: var(--muted); margin-top:2px;">
+                                                {format!("Odds {:.3} | Kelly {:.1}% → Recommend {:.1}% | EV/1 {:+.3} | Stake ${:.0}", d, 100.0*(*f), 100.0*rec, ev, bank_for_cmp*rec)}
+                                            </div>
+                                        </div>
+                                    }
+                                }) }
+                            </div>
+                        }
+                    }) }
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>
+                    <span>{"Three-Way Market (Exact Kelly)"}</span>
+                    <span class={if (three_sum - 1.0).abs() < 1e-6 { "status-indicator success" } else { "status-indicator" }}>
+                        {format!("Total stake: {:.1}%", 100.0*three_sum)}
+                    </span>
+                </h2>
+                <div class="hint" style="margin-bottom:12px;">{"Enter market vs your probabilities for 3 mutually exclusive outcomes (e.g., Team A / Draw / Team B). This computes the exact Kelly allocation across outcomes."}</div>
+
+                { for (*three).iter().enumerate().map(|(i, r)| {
+                    let three_set = three.clone();
+                    let on_name = Callback::from(move |e: InputEvent| {
+                        let mut v = (*three_set).clone();
+                        let t: HtmlInputElement = e.target_unchecked_into();
+                        v[i].name = t.value();
+                        three_set.set(v);
+                    });
+                    let three_set2 = three.clone();
+                    let on_mkt = Callback::from(move |e: InputEvent| {
+                        let mut v = (*three_set2).clone();
+                        let t: HtmlInputElement = e.target_unchecked_into();
+                        v[i].mkt = t.value().parse::<f64>().unwrap_or(0.0).clamp(0.0, 100.0);
+                        three_set2.set(v);
+                    });
+                    let three_set3 = three.clone();
+                    let on_yours = Callback::from(move |e: InputEvent| {
+                        let mut v = (*three_set3).clone();
+                        let t: HtmlInputElement = e.target_unchecked_into();
+                        v[i].yours = t.value().parse::<f64>().unwrap_or(0.0).clamp(0.0, 100.0);
+                        three_set3.set(v);
+                    });
+                    html!{
+                        <div class="row three" style="gap:8px; margin-bottom:12px; align-items: end;">
+                            <div>
+                                <label>{"Outcome"}</label>
+                                <input value={r.name.clone()} oninput={on_name} aria-label="Three-way outcome name" />
+                            </div>
+                            <div>
+                                <label>{"Market %"}</label>
+                                <input type="number" min="0" max="100" step="0.1" value={format!("{:.1}", r.mkt)} oninput={on_mkt} aria-label="Three-way market probability" />
+                            </div>
+                            <div>
+                                <label>{"Your %"}</label>
+                                <input type="number" min="0" max="100" step="0.1" value={format!("{:.1}", r.yours)} oninput={on_yours} aria-label="Three-way your probability" />
+                            </div>
+                        </div>
+                    }
+                })}
+                <div class="section-divider"></div>
+                <div>
+                    { for three_rows.iter().enumerate().map(|(i, r)| {
+                        let frac = three_alloc.get(i).cloned().unwrap_or(0.0);
+                        html!{
+                            <div style="padding:8px; background:rgba(255,255,255,0.02); border-radius:6px; margin-top:6px;">
+                                <strong>{&r.name}</strong>
+                                <div style="font-size:12px; color: var(--muted); margin-top:2px;">
+                                    {format!("Recommend: {:.1}% of bankroll → ${:.0}", 100.0*frac, bankroll_val()*frac)}
+                                </div>
+                            </div>
+                        }
+                    }) }
+                </div>
+                <div class="hint" style="margin-top:12px;">{"Optimization: maximize expected log growth under sum of stakes ≤ 100%."}</div>
+            </div>
+
             <footer>
                 {"EdgeRunner v0.1 - Professional Kelly Criterion calculator for optimal bet sizing"}
             </footer>
@@ -668,6 +889,98 @@ fn complement_decimal(d: f64) -> f64 {
     // d_opposite = d / (d - 1)
     if d <= 1.0 { return f64::NAN; }
     d / (d - 1.0)
+}
+
+// ---- Exact Kelly for mutually exclusive outcomes (N-outcome market) ----
+fn kelly_multi_exact(p: &[f64], d: &[f64], cap: f64) -> Vec<f64> {
+    let n = p.len();
+    if n == 0 || d.len() != n { return vec![]; }
+    // Initialize with independent Kelly scaled
+    let mut f: Vec<f64> = Vec::with_capacity(n);
+    let mut sumk = 0.0;
+    for i in 0..n {
+        let b = d[i] - 1.0;
+        let q = 1.0 - p[i];
+        let fi = if b > 0.0 { (((b*p[i]) - q) / b).clamp(0.0, 1.0) } else { 0.0 };
+        sumk += fi; f.push(fi);
+    }
+    if sumk > cap && sumk > 0.0 {
+        let scale = cap / sumk;
+        for i in 0..n { f[i] *= scale; }
+    }
+
+    // Helper closures
+    let obj = |f: &Vec<f64>| -> f64 {
+        let fsum: f64 = f.iter().sum();
+        let mut val = 0.0;
+        for i in 0..n {
+            let wi = 1.0 - fsum + d[i]*f[i];
+            if wi <= 1e-12 { return f64::NEG_INFINITY; }
+            val += p[i] * wi.ln();
+        }
+        val
+    };
+    let grad = |f: &Vec<f64>| -> Vec<f64> {
+        let fsum: f64 = f.iter().sum();
+        let mut g = vec![0.0; n];
+        // precompute S = sum_i p_i / W_i
+        let mut s_over = 0.0;
+        let mut inv_w: Vec<f64> = vec![0.0; n];
+        for i in 0..n {
+            let wi = 1.0 - fsum + d[i]*f[i];
+            let inv = if wi <= 1e-12 { 1e12 } else { 1.0/wi };
+            inv_w[i] = inv;
+            s_over += p[i] * inv;
+        }
+        for k in 0..n {
+            g[k] = -s_over + p[k] * d[k] * inv_w[k];
+        }
+        g
+    };
+
+    let proj = |v: &mut Vec<f64>| {
+        // Project onto simplex {x >= 0, sum x <= cap}
+        for x in v.iter_mut() { if *x < 0.0 { *x = 0.0; } }
+        let sum: f64 = v.iter().sum();
+        if sum <= cap { return; }
+        // Euclidean projection onto capped simplex via sorting
+        let mut u: Vec<f64> = v.clone();
+        u.sort_by(|a,b| b.partial_cmp(a).unwrap());
+        let mut cssv = 0.0;
+        let mut rho = -1;
+        for (j, &u_j) in u.iter().enumerate() {
+            cssv += u_j;
+            let t = (cssv - cap) / ((j as f64)+1.0);
+            if u_j - t > 0.0 { rho = j as i32; }
+        }
+        let rho = if rho < 0 { 0 } else { rho as usize };
+        let theta = (u.iter().take(rho+1).sum::<f64>() - cap) / ((rho+1) as f64);
+        for x in v.iter_mut() { *x = (*x - theta).max(0.0); }
+    };
+
+    // Projected gradient ascent with backtracking
+    let mut step = 0.25;
+    let mut best_f = f.clone();
+    let mut best_obj = obj(&f);
+    for _iter in 0..300 {
+        let g = grad(&f);
+        // tentative
+        let mut cand = f.iter().zip(g.iter()).map(|(a, b)| a + step * b).collect::<Vec<_>>();
+        proj(&mut cand);
+        let o_new = obj(&cand);
+        if o_new.is_finite() && o_new > best_obj + 1e-9 {
+            f = cand;
+            best_obj = o_new;
+            best_f = f.clone();
+            // try slightly larger step
+            step = (step * 1.05).min(1.0);
+        } else {
+            // reduce step
+            step *= 0.5;
+            if step < 1e-6 { break; }
+        }
+    }
+    best_f
 }
 
 fn main() {
