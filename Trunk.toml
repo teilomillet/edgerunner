@@ -1,0 +1,6 @@
+[build]
+release = true
+# Set this to your GitHub Pages path; for a project site under
+# https://<user>.github.io/edgerunner/ keep it "/edgerunner/".
+# If deploying to a user/organization site at the root, change to "/".
+public_url = "/edgerunner/"
